@@ -18,10 +18,11 @@ CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 
-# ── 캐시 유틸 ────────────────────────────────────────────────────────
+# ── 캐시 유틸 (시간 단위 TTL) ───────────────────────────────────────
 
 def _cache_path(name):
-    return os.path.join(CACHE_DIR, f"{name}_{datetime.now().strftime('%Y%m%d')}.pkl")
+    # 시간 단위 캐시: 1시간마다 갱신
+    return os.path.join(CACHE_DIR, f"{name}_{datetime.now().strftime('%Y%m%d%H')}.pkl")
 
 def _load_cache(name):
     p = _cache_path(name)
@@ -34,11 +35,23 @@ def _load_cache(name):
     return None
 
 def _save_cache(name, data):
+    _evict_old_cache(name)   # 새 캐시 저장 전 이전 파일 정리
     try:
         with open(_cache_path(name), "wb") as f:
             pickle.dump(data, f)
     except Exception:
         pass
+
+def _evict_old_cache(name):
+    """현재 시간 외의 해당 name 캐시 파일 삭제."""
+    import glob
+    current = _cache_path(name)
+    for f in glob.glob(os.path.join(CACHE_DIR, f"{name}_*.pkl")):
+        if f != current:
+            try:
+                os.remove(f)
+            except Exception:
+                pass
 
 def clear_all_cache():
     import glob
@@ -241,98 +254,87 @@ def _html_tables(url):
     return pd.read_html(resp.text)
 
 
-# ── 한국 (KOSPI 상위 종목) ────────────────────────────────────────────
+# ── 한국 (KOSPI 200) ─────────────────────────────────────────────────
 
-KOSPI_TICKERS = [
-    # 반도체·전자
-    "005930.KS",  # 삼성전자
-    "000660.KS",  # SK하이닉스
-    "009150.KS",  # 삼성전기
-    "042700.KS",  # 한미반도체
-    "018260.KS",  # 삼성SDS
-    "066570.KS",  # LG전자
-    "034220.KS",  # LG디스플레이
-    "357780.KS",  # 솔브레인
-    "240810.KS",  # 원익IPS
-    # 2차전지·에너지
-    "373220.KS",  # LG에너지솔루션
-    "006400.KS",  # 삼성SDI
-    "051910.KS",  # LG화학
-    "247540.KS",  # 에코프로비엠
-    "009830.KS",  # 한화솔루션
-    "096770.KS",  # SK이노베이션
-    "010950.KS",  # S-Oil
-    "267250.KS",  # HD현대중공업
-    "078930.KS",  # GS
+# 네이버 금융 스크래핑 실패 시 사용할 KOSPI 200 fallback
+_KOSPI200_FALLBACK = [
+    # 반도체·전자·IT부품
+    "005930.KS","000660.KS","009150.KS","042700.KS","018260.KS",
+    "066570.KS","034220.KS","011070.KS","357780.KS","240810.KS","000990.KS",
+    # 2차전지·소재·에너지
+    "373220.KS","006400.KS","051910.KS","247540.KS","086520.KS","003670.KS",
+    "009830.KS","096770.KS","361610.KS","010950.KS","078930.KS","011790.KS",
+    "010060.KS","014680.KS","298020.KS","298050.KS","004800.KS",
     # 자동차·부품
-    "005380.KS",  # 현대차
-    "000270.KS",  # 기아
-    "012330.KS",  # 현대모비스
-    "011210.KS",  # 현대위아
-    "000240.KS",  # 한국타이어앤테크놀로지
-    # 금융·보험
-    "055550.KS",  # 신한지주
-    "105560.KS",  # KB금융
-    "086790.KS",  # 하나금융지주
-    "032830.KS",  # 삼성생명
-    "000810.KS",  # 삼성화재
-    "024110.KS",  # 기업은행
-    "071050.KS",  # 한국금융지주
-    "316140.KS",  # 우리금융지주
-    "039490.KS",  # 키움증권
-    "006800.KS",  # 미래에셋증권
-    "138930.KS",  # BNK금융지주
-    "139130.KS",  # DGB금융지주
-    # 통신·IT
-    "017670.KS",  # SK텔레콤
-    "030200.KS",  # KT
-    "035420.KS",  # NAVER
-    "035720.KS",  # 카카오
-    "034730.KS",  # SK
-    "259960.KS",  # 크래프톤
-    "036570.KS",  # 엔씨소프트
-    # 철강·소재·화학
-    "005490.KS",  # POSCO홀딩스
-    "010130.KS",  # 고려아연
-    "002380.KS",  # KCC
-    "011170.KS",  # 롯데케미칼
-    "011780.KS",  # 금호석유
-    "003670.KS",  # 포스코퓨처엠
-    "047050.KS",  # 포스코인터내셔널
-    # 건설·중공업
-    "006360.KS",  # GS건설
-    "000720.KS",  # 현대건설
-    "042660.KS",  # 한화오션
-    "009540.KS",  # HD한국조선해양
-    "010140.KS",  # 삼성중공업
-    # 바이오·헬스
-    "207940.KS",  # 삼성바이오로직스
-    "068270.KS",  # 셀트리온
-    "000100.KS",  # 유한양행
-    "326030.KS",  # SK바이오팜
-    "128940.KS",  # 한미약품
-    "012450.KS",  # 한화에어로스페이스
-    "180640.KS",  # 한화시스템
-    # 유통·소비·운수
-    "028260.KS",  # 삼성물산
-    "139480.KS",  # 이마트
-    "023530.KS",  # 롯데쇼핑
-    "004170.KS",  # 신세계
-    "033780.KS",  # KT&G
-    "097950.KS",  # CJ제일제당
-    "003550.KS",  # LG
-    "001040.KS",  # CJ
-    "000120.KS",  # CJ대한통운
-    "011200.KS",  # HMM
-    "003490.KS",  # 대한항공
+    "005380.KS","000270.KS","012330.KS","011210.KS","000240.KS",
+    "161390.KS","064350.KS","086280.KS",
+    # 금융·보험·증권
+    "055550.KS","105560.KS","086790.KS","032830.KS","000810.KS",
+    "024110.KS","071050.KS","316140.KS","039490.KS","006800.KS",
+    "138930.KS","139130.KS","016360.KS","088350.KS","000060.KS",
+    # 통신·플랫폼·게임
+    "017670.KS","030200.KS","032640.KS","035420.KS","035720.KS",
+    "034730.KS","259960.KS","036570.KS","263750.KS",
+    # 철강·화학·소재
+    "005490.KS","010130.KS","002380.KS","011170.KS","011780.KS",
+    "047050.KS","006260.KS","010120.KS","003410.KS","000670.KS",
+    "001430.KS","006650.KS","004490.KS","000210.KS",
+    # 건설·중공업·방산
+    "028260.KS","006360.KS","000720.KS","042660.KS","009540.KS",
+    "010140.KS","267250.KS","047810.KS","012450.KS","180640.KS",
+    # 바이오·헬스·뷰티
+    "207940.KS","068270.KS","000100.KS","326030.KS","128940.KS",
+    "051900.KS","090430.KS","002790.KS",
+    # 유통·소비재·식품
+    "139480.KS","023530.KS","004170.KS","033780.KS","097950.KS",
+    "003550.KS","001040.KS","282330.KS","007070.KS","271560.KS",
+    "003230.KS","004370.KS","000080.KS","069960.KS","008770.KS",
+    "030000.KS","093050.KS","081660.KS",
+    # 운수·물류
+    "000120.KS","011200.KS","003490.KS",
     # 에너지·공기업
-    "015760.KS",  # 한국전력
-    "036460.KS",  # 한국가스공사
-    "051600.KS",  # 한전KPS
+    "015760.KS","036460.KS","051600.KS",
+    # 기타
+    "012750.KS","017800.KS",
 ]
 
+def _get_kospi200_tickers():
+    """네이버 금융에서 KOSPI 200 구성종목 스크래핑 (4페이지 × 50종목)."""
+    import re
+    tickers = []
+    try:
+        for page in range(1, 21):  # 페이지당 10개 × 20페이지 = 200개
+            url = (
+                f"https://finance.naver.com/sise/entryJongmok.naver"
+                f"?code=KOSPI200&page={page}"
+            )
+            resp = requests.get(
+                url,
+                headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"},
+                timeout=10,
+                verify=False,
+            )
+            codes = re.findall(r'/item/main\.naver\?code=(\d{6})', resp.text)
+            tickers.extend([f"{c}.KS" for c in codes])
+    except Exception:
+        pass
+
+    # 중복 제거
+    seen, unique = set(), []
+    for t in tickers:
+        if t not in seen:
+            seen.add(t)
+            unique.append(t)
+
+    if len(unique) >= 150:
+        print(f"[KOSPI200] 네이버 금융 스크래핑 성공: {len(unique)}개")
+        return unique
+
+    print(f"[KOSPI200] 스크래핑 실패 또는 부족 ({len(unique)}개) → fallback 사용")
+    return _KOSPI200_FALLBACK
+
 def fetch_korea():
-    return _fetch_country(KOSPI_TICKERS, "KRW", "korea", info_delay=0.3)
+    return _fetch_country(_get_kospi200_tickers(), "KRW", "korea", info_delay=0.3)
 
 
 # ── 미국 S&P 500 ────────────────────────────────────────────────────
