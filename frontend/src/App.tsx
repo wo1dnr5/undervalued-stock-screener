@@ -4,7 +4,7 @@ import StockTable from './components/StockTable'
 import { Filters } from './types'
 
 const COUNTRIES = [
-  { key: 'kr',     flag: '🇰🇷', label: '한국',        subtitle: 'KOSPI' },
+  { key: 'kr',     flag: '🇰🇷', label: '한국',        subtitle: 'KOSPI 200' },
   { key: 'sp500',  flag: '🇺🇸', label: 'S&P 500',     subtitle: '미국 대형주 500' },
   { key: 'nasdaq', flag: '🇺🇸', label: 'NASDAQ 100',  subtitle: '미국 기술주 100' },
   { key: 'cn',     flag: '🇨🇳', label: '중국',        subtitle: 'CSI 300' },
