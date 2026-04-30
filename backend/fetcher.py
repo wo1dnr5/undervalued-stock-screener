@@ -2,9 +2,9 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import os, pickle, time, warnings
+import os, pickle, warnings
 
 warnings.filterwarnings("ignore")
 requests.packages.urllib3.disable_warnings()  # SSL verify=False 경고 억제
@@ -42,15 +42,6 @@ def clear_all_cache():
             os.remove(f)
         except Exception:
             pass
-
-def _last_biz_date(offset=0):
-    d = datetime.now() - timedelta(days=offset)
-    while d.weekday() >= 5:
-        d -= timedelta(days=1)
-    return d.strftime("%Y%m%d")
-
-def _one_year_ago():
-    return (datetime.now() - timedelta(days=380)).strftime("%Y%m%d")
 
 def calculate_rsi(closes, period=14):
     if closes is None or len(closes) < period + 1:
