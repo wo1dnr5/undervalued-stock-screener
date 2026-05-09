@@ -16,8 +16,8 @@ PER · PBR · ROE · RSI · 52주 고점 대비 · 200일 이평선 기준으로
 - **멀티팩터 저평가 점수**: PER(25%) + PBR(20%) + ROE(20%) + RSI(20%) + 52주 변동(15%) 가중 합산
 - **프론트엔드 실시간 필터링**: 슬라이더 조정 즉시 반영 (API 재호출 없음)
 - **TradingView 연동**: 종목 행 클릭 시 해당 종목 차트 페이지로 이동
-- **일별 캐싱**: 동일 날짜 내 재실행 시 캐시에서 즉시 응답 (yfinance API 부하 최소화)
-- **새로고침 버튼**: 캐시 초기화 후 최신 데이터 재수집
+- **10분 캐싱 + 이전 캐시 폴백**: 최신 캐시 우선 사용, rate limit 발생 시 이전 캐시로 자동 대체 (yfinance 차단 방어)
+- **국가별 새로고침**: 특정 국가 캐시만 삭제 후 최신 데이터 재수집 (10분 쿨다운 적용)
 
 ---
 
@@ -29,8 +29,7 @@ PER · PBR · ROE · RSI · 52주 고점 대비 · 200일 이평선 기준으로
 | API 프레임워크 | FastAPI + Uvicorn |
 | 주가 데이터 | yfinance (Yahoo Finance) |
 | 데이터 처리 | pandas, numpy |
-| 병렬 수집 | ThreadPoolExecutor |
-| 캐싱 | 파일 기반 pickle (일별) |
+| 캐싱 | 파일 기반 pickle (10분 TTL, stale fallback) |
 | 지수 구성종목 | Wikipedia HTML 스크래핑 (requests) |
 
 ### 프론트엔드
@@ -50,8 +49,7 @@ PER · PBR · ROE · RSI · 52주 고점 대비 · 200일 이평선 기준으로
 undervalued_stock/
 ├── backend/
 │   ├── api.py            # FastAPI 앱 (라우터 정의)
-│   ├── fetcher.py        # 국가별 주가 데이터 수집 (yfinance)
-│   ├── screener.py       # 백엔드 필터/스코어 유틸 (참고용)
+│   ├── fetcher.py        # 국가별 주가 데이터 수집 (yfinance, 10분 캐싱)
 │   └── requirements.txt  # Python 의존성
 ├── frontend/
 │   ├── src/
@@ -78,11 +76,11 @@ undervalued_stock/
 
 | 시장 | 지수 | 종목 수 |
 |---|---|---|
-| 🇰🇷 한국 | KOSPI 상위 50 | ~50개 |
+| 🇰🇷 한국 | KOSPI 200 | ~170개 |
 | 🇺🇸 미국 | S&P 500 | ~500개 |
 | 🇺🇸 미국 | NASDAQ 100 | ~100개 |
-| 🇨🇳 중국 | CSI 300 주요 50 | ~50개 |
-| 🇯🇵 일본 | Nikkei 225 | ~225개 |
+| 🇨🇳 중국 | CSI 300 (Wikipedia) | ~300개 |
+| 🇯🇵 일본 | Nikkei 225 | ~190개 |
 
 ---
 
@@ -96,9 +94,9 @@ undervalued_stock/
 ### 백엔드 실행
 
 ```bash
-cd backend
-pip install -r requirements.txt
-uvicorn api:app --reload --port 8000
+cd undervalued_stock
+pip install -r backend/requirements.txt
+uvicorn backend.api:app --port 8000
 ```
 
 > **macOS SSL 이슈**: yfinance 및 Wikipedia 스크래핑이 SSL 인증서 오류를 겪는 경우, fetcher.py 내 `requests.get(verify=False)` 설정이 자동으로 우회합니다.
@@ -122,9 +120,9 @@ npm run dev
 ```
 [yfinance / Wikipedia]
         ↓
-[fetcher.py] ThreadPoolExecutor로 병렬 수집
+[fetcher.py] 종목 순차 수집 (랜덤 지터 sleep으로 rate limit 방어)
         ↓
-[cache/] 파일 캐싱 (당일 재실행 시 즉시 반환)
+[cache/] 10분 TTL pickle 캐싱 (rate limit 시 이전 캐시 자동 폴백)
         ↓
 [api.py] GET /api/stocks/{country} → JSON 응답
         ↓
@@ -164,7 +162,7 @@ npm run dev
 | 메서드 | 경로 | 설명 |
 |---|---|---|
 | GET | `/api/stocks/{country}` | 국가별 종목 데이터 반환 (`kr`, `sp500`, `nasdaq`, `cn`, `jp`) |
-| DELETE | `/api/cache` | 캐시 전체 삭제 (새로고침 트리거) |
+| DELETE | `/api/cache?country={country}` | 국가별 캐시 삭제 (미지정 시 전체 삭제) |
 | GET | `/api/health` | 서버 상태 확인 |
 
 ### 응답 형식
@@ -185,7 +183,8 @@ npm run dev
       "currency": "KRW"
     }
   ],
-  "total": 48
+  "total": 173,
+  "fetched_at": "2026-05-09 15:33"
 }
 ```
 
@@ -214,7 +213,7 @@ npm run dev
 - 5단계 체계적 매수 프레임워크
 - 포지션 사이징 규칙 (A등급 5–8%, B등급 3–5%)
 - 손절/익절 기준 (-12% 하드 스탑, +15%/+25%/+40% 단계적 익절)
-- 2026년 4월 현재 시장 환경 분석 및 국가 우선순위
+- 2026년 5월 현재 시장 환경 분석 및 국가 우선순위
 
 ---
 
