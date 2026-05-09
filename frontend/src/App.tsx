@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import FilterPanel from './components/FilterPanel'
 import StockTable from './components/StockTable'
 import { Filters } from './types'
@@ -19,21 +19,38 @@ const DEFAULT_FILTERS: Filters = {
   w52_min: -10,
 }
 
+const COOLDOWN_MS = 10 * 60 * 1000  // 10분
+
 export default function App() {
   const [activeTab, setActiveTab] = useState('kr')
   const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS)
   const [refreshKey, setRefreshKey] = useState(0)
   const [refreshing, setRefreshing] = useState(false)
+  const [lastRefreshAt, setLastRefreshAt] = useState<number | null>(null)
+  const [now, setNow] = useState(Date.now())
+
+  // 10초마다 현재 시간 갱신 → 쿨다운 카운트다운 업데이트
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 10_000)
+    return () => clearInterval(id)
+  }, [])
+
+  const cooldownLeft = lastRefreshAt
+    ? Math.max(0, Math.ceil((COOLDOWN_MS - (now - lastRefreshAt)) / 60_000))
+    : 0
+  const canRefresh = !refreshing && cooldownLeft === 0
 
   const handleRefresh = useCallback(async () => {
+    if (!canRefresh) return
     setRefreshing(true)
+    setLastRefreshAt(Date.now())
     try {
-      await fetch('/api/cache', { method: 'DELETE' })
+      await fetch(`/api/cache?country=${activeTab}`, { method: 'DELETE' })
     } finally {
       setRefreshKey(k => k + 1)
       setRefreshing(false)
     }
-  }, [])
+  }, [canRefresh, activeTab])
 
   return (
     <div className="min-h-screen bg-[#f0f2f5]">
@@ -60,6 +77,7 @@ export default function App() {
           onChange={setFilters}
           onRefresh={handleRefresh}
           loading={refreshing}
+          cooldownLeft={cooldownLeft}
         />
 
         {/* Card */}

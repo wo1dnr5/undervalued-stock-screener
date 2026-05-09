@@ -110,6 +110,14 @@ export default function StockTable({ country, filters, refreshKey }: Props) {
               </span>
             </>
           )}
+          {data?.fetched_at && (
+            <>
+              <span className="text-gray-200">|</span>
+              <span className="text-gray-400">
+                수집 <strong className="text-gray-600">{data.fetched_at}</strong>
+              </span>
+            </>
+          )}
         </div>
         <span className="text-[11px] text-gray-400 flex items-center gap-1">
           <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -121,7 +129,7 @@ export default function StockTable({ country, filters, refreshKey }: Props) {
 
       {error && (
         <div className="py-12 text-center text-sm text-red-400 bg-red-50 rounded-xl">
-          백엔드 서버에 연결할 수 없습니다. <code className="text-xs bg-red-100 px-1 rounded">uvicorn api:app --reload</code> 를 실행해 주세요.
+          백엔드 서버에 연결할 수 없습니다. <code className="text-xs bg-red-100 px-1 rounded">uvicorn backend.api:app --port 8000</code> 를 실행해 주세요.
         </div>
       )}
 

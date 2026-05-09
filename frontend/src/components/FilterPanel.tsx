@@ -5,6 +5,7 @@ interface Props {
   onChange: (f: Filters) => void
   onRefresh: () => void
   loading: boolean
+  cooldownLeft: number
 }
 
 function Slider({
@@ -31,8 +32,9 @@ function Slider({
   )
 }
 
-export default function FilterPanel({ filters, onChange, onRefresh, loading }: Props) {
+export default function FilterPanel({ filters, onChange, onRefresh, loading, cooldownLeft }: Props) {
   const set = (key: keyof Filters) => (v: number) => onChange({ ...filters, [key]: v })
+  const onCooldown = cooldownLeft > 0
 
   return (
     <div className="bg-white rounded-2xl border border-gray-100 shadow-sm px-6 py-5">
@@ -43,11 +45,11 @@ export default function FilterPanel({ filters, onChange, onRefresh, loading }: P
         </div>
         <button
           onClick={onRefresh}
-          disabled={loading}
+          disabled={loading || onCooldown}
           className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium rounded-xl bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
         >
           <span className={loading ? 'animate-spin inline-block' : ''}>↺</span>
-          {loading ? '수집 중...' : '새로고침'}
+          {loading ? '수집 중...' : onCooldown ? `${cooldownLeft}분 후 가능` : '새로고침'}
         </button>
       </div>
 

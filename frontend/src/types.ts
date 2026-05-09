@@ -15,6 +15,7 @@ export interface Stock {
 export interface StockResponse {
   stocks: Stock[]
   total: number
+  fetched_at?: string | null
 }
 
 export interface Filters {

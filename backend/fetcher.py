@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import requests
 from datetime import datetime
-import os, pickle, time, warnings
+import os, pickle, time, warnings, random
 
 warnings.filterwarnings("ignore")
 requests.packages.urllib3.disable_warnings()
@@ -21,24 +21,53 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 # ── 캐시 유틸 (시간 단위 TTL) ───────────────────────────────────────
 
 def _cache_path(name):
-    # 시간 단위 캐시: 1시간마다 갱신
-    return os.path.join(CACHE_DIR, f"{name}_{datetime.now().strftime('%Y%m%d%H')}.pkl")
+    # 10분 단위 캐시: strftime 분에서 마지막 자리 제거 → 0~9분=같은 버킷
+    return os.path.join(CACHE_DIR, f"{name}_{datetime.now().strftime('%Y%m%d%H%M')[:-1]}.pkl")
 
 def _load_cache(name):
+    """현재 기간 캐시 로드. (df, fetched_at) 반환, 없으면 (None, None)."""
     p = _cache_path(name)
     if os.path.exists(p):
         try:
             with open(p, "rb") as f:
-                return pickle.load(f)
+                payload = pickle.load(f)
+            if isinstance(payload, dict) and "data" in payload:
+                return payload["data"], payload.get("fetched_at")
+            if isinstance(payload, pd.DataFrame):  # 구형 포맷 호환
+                return payload, None
         except Exception:
             pass
-    return None
+    return None, None
 
-def _save_cache(name, data):
-    _evict_old_cache(name)   # 새 캐시 저장 전 이전 파일 정리
+def _load_stale_cache(name):
+    """현재 기간 외 가장 최근 성공 캐시 로드. rate limit 폴백용."""
+    import glob
+    current = _cache_path(name)
+    files = [f for f in glob.glob(os.path.join(CACHE_DIR, f"{name}_*.pkl")) if f != current]
+    if not files:
+        return None, None
+    latest = max(files, key=os.path.getmtime)
+    try:
+        with open(latest, "rb") as f:
+            payload = pickle.load(f)
+        if isinstance(payload, dict) and "data" in payload:
+            df = payload["data"]
+            if df is not None and not df.empty:
+                return df, payload.get("fetched_at", "이전") + " (이전 캐시)"
+        elif isinstance(payload, pd.DataFrame) and not payload.empty:
+            return payload, "이전 캐시"
+    except Exception:
+        pass
+    return None, None
+
+def _save_cache(name, data, fetched_at):
+    """빈 결과는 저장하지 않음 — rate limit 실패를 캐싱하지 않기 위함."""
+    if data is None or (hasattr(data, "empty") and data.empty):
+        return
+    _evict_old_cache(name)
     try:
         with open(_cache_path(name), "wb") as f:
-            pickle.dump(data, f)
+            pickle.dump({"data": data, "fetched_at": fetched_at}, f)
     except Exception:
         pass
 
@@ -56,6 +85,15 @@ def _evict_old_cache(name):
 def clear_all_cache():
     import glob
     for f in glob.glob(os.path.join(CACHE_DIR, "*.pkl")):
+        try:
+            os.remove(f)
+        except Exception:
+            pass
+
+def clear_country_cache(cache_name):
+    """특정 국가 캐시만 삭제."""
+    import glob
+    for f in glob.glob(os.path.join(CACHE_DIR, f"{cache_name}_*.pkl")):
         try:
             os.remove(f)
         except Exception:
@@ -136,81 +174,87 @@ def _get_info_safe(ticker_str, retries=3):
                 return {}
             return info
         except YFRateLimitError:
-            time.sleep(15 * (attempt + 1))
+            time.sleep(15 * (attempt + 1) + random.uniform(0, 5))
         except Exception as e:
             msg = str(e).lower()
             if "429" in msg or "too many" in msg or "rate" in msg:
-                time.sleep(15 * (attempt + 1))
+                time.sleep(15 * (attempt + 1) + random.uniform(0, 5))
             else:
                 return {}
     return {}
 
+
+class _RateLimited(Exception):
+    """Yahoo Finance IP 차단 감지 — 즉시 스테일 캐시로 전환하기 위한 내부 예외."""
+    pass
 
 def _download_closes(tickers, period="1y"):
-    """yf.download() 로 배치 종가 데이터 획득. MultiIndex 처리."""
-    for attempt in range(3):
-        try:
-            raw = yf.download(
-                tickers,
-                period=period,
-                auto_adjust=True,
-                progress=False,
-                threads=False,
-            )
-            if raw is None or raw.empty:
-                return {}
-            # MultiIndex(Close, Ticker) → dict
-            if isinstance(raw.columns, pd.MultiIndex):
-                close = raw["Close"]
-            else:
-                # 단일 티커: 컬럼이 OHLCV
-                close = raw[["Close"]] if "Close" in raw.columns else raw
-                close.columns = [tickers[0]] if len(tickers) == 1 else tickers
-            result = {}
-            for col in close.columns:
-                s = close[col].dropna()
-                if len(s) >= 20:
-                    result[col] = s
-            return result
-        except YFRateLimitError:
-            time.sleep(20 * (attempt + 1))
-        except Exception as e:
-            msg = str(e).lower()
-            if "429" in msg or "too many" in msg or "rate" in msg:
-                time.sleep(20 * (attempt + 1))
-            else:
-                return {}
-    return {}
+    """yf.download() 로 배치 종가 데이터 획득. rate limit 시 _RateLimited 발생."""
+    try:
+        raw = yf.download(
+            tickers,
+            period=period,
+            auto_adjust=True,
+            progress=False,
+            threads=False,
+        )
+        if raw is None or raw.empty:
+            return {}
+        if isinstance(raw.columns, pd.MultiIndex):
+            close = raw["Close"]
+        else:
+            close = raw[["Close"]] if "Close" in raw.columns else raw
+            close.columns = [tickers[0]] if len(tickers) == 1 else tickers
+        result = {}
+        for col in close.columns:
+            s = close[col].dropna()
+            if len(s) >= 20:
+                result[col] = s
+        return result
+    except YFRateLimitError:
+        raise _RateLimited()
+    except Exception as e:
+        msg = str(e).lower()
+        if "429" in msg or "too many" in msg or "rate" in msg:
+            raise _RateLimited()
+        return {}
 
 
 def _fetch_country(tickers, currency, cache_name, info_delay=0.4):
     """
     1. yf.download() 로 배치 가격 수집
     2. 순차 t.info 로 PER/PBR/ROE 수집
-    3. 결합 → DataFrame 반환
+    3. 결합 → (DataFrame, fetched_at) 반환
     """
-    cached = _load_cache(cache_name)
-    if cached is not None:
-        return cached
+    df, fetched_at = _load_cache(cache_name)
+    if df is not None:
+        return df, fetched_at
 
-    # 중복 제거
     tickers = list(dict.fromkeys(tickers))
 
     print(f"[{cache_name}] 가격 다운로드 중... ({len(tickers)}개)")
-    closes_map = _download_closes(tickers)
+    try:
+        closes_map = _download_closes(tickers)
+    except _RateLimited:
+        print(f"[{cache_name}] Rate limit 감지 → 즉시 이전 캐시로 전환")
+        stale_df, stale_at = _load_stale_cache(cache_name)
+        if stale_df is not None:
+            print(f"[{cache_name}] 이전 캐시 반환: {len(stale_df)}개")
+            return stale_df, stale_at
+        return pd.DataFrame(), None
     print(f"[{cache_name}] 가격 수집 완료: {len(closes_map)}개")
 
     records = []
     for i, ticker in enumerate(tickers):
         closes = closes_map.get(ticker)
         if closes is None or len(closes) < 20:
-            time.sleep(info_delay)
+            time.sleep(info_delay + random.uniform(0, info_delay * 0.5))
             continue
 
         info = _get_info_safe(ticker)
         per = info.get("trailingPE") or info.get("forwardPE")
         if not per or per <= 0 or per > 5000:
-            time.sleep(info_delay)
+            time.sleep(info_delay + random.uniform(0, info_delay * 0.5))
             continue
 
         pbr_raw = info.get("priceToBook")
@@ -233,17 +277,28 @@ def _fetch_country(tickers, currency, cache_name, info_delay=0.4):
         if (i + 1) % 10 == 0:
             print(f"[{cache_name}] {i+1}/{len(tickers)} 처리 중...")
 
-        time.sleep(info_delay)
+        time.sleep(info_delay + random.uniform(0, info_delay * 0.5))
 
+    fetched_at = datetime.now().strftime("%Y-%m-%d %H:%M")
     df = pd.DataFrame(records)
-    _save_cache(cache_name, df)
+
+    if df.empty:
+        print(f"[{cache_name}] 수집 실패(0개) → 이전 캐시 사용 시도")
+        stale_df, stale_at = _load_stale_cache(cache_name)
+        if stale_df is not None:
+            print(f"[{cache_name}] 이전 캐시 반환: {len(stale_df)}개")
+            return stale_df, stale_at
+        return df, fetched_at
+
+    _save_cache(cache_name, df, fetched_at)
     print(f"[{cache_name}] 완료: {len(df)}개 종목")
-    return df
+    return df, fetched_at
 
 
 # ── Wikipedia HTML 파싱 (SSL 우회) ───────────────────────────────────
 
 def _html_tables(url):
+    import io
     resp = requests.get(
         url,
         verify=False,
@@ -251,7 +306,7 @@ def _html_tables(url):
         timeout=15,
     )
     resp.raise_for_status()
-    return pd.read_html(resp.text)
+    return pd.read_html(io.StringIO(resp.text))
 
 
 # ── 한국 (KOSPI 200) ─────────────────────────────────────────────────
@@ -299,7 +354,7 @@ _KOSPI200_FALLBACK = [
 ]
 
 def _get_kospi200_tickers():
-    """네이버 금융에서 KOSPI 200 구성종목 스크래핑 (4페이지 × 50종목)."""
+    """네이버 금융에서 KOSPI 200 구성종목 스크래핑 (20페이지 × 10종목)."""
     import re
     tickers = []
     try:
@@ -410,53 +465,92 @@ def fetch_us():
 # ── 일본 (Nikkei 225) ────────────────────────────────────────────────
 
 _NIKKEI225_FALLBACK = [
-    # 전기기기
-    "6758.T","6752.T","6954.T","6971.T","6981.T","6723.T","6762.T","6857.T",
-    "6861.T","6920.T","6869.T","6594.T","6506.T","6473.T","6479.T","6503.T",
-    "6501.T","6702.T","6701.T","6724.T","6770.T","6841.T","6963.T","6645.T",
-    # 수송기기
-    "7203.T","7267.T","7269.T","7270.T","7201.T","7261.T","7272.T","6902.T",
-    # 기계
-    "6301.T","6326.T","6273.T","6367.T","6113.T","7011.T","7012.T","7013.T",
+    # 수산·농림
+    "1332.T","1333.T",
+    # 광업
+    "1605.T",
+    # 건설
+    "1721.T","1801.T","1802.T","1803.T","1808.T","1812.T","1925.T","1928.T",
+    # 식품·음료
+    "2002.T","2269.T","2282.T","2502.T","2503.T","2531.T","2801.T","2802.T","2871.T","2914.T",
+    # 섬유
+    "3101.T","3105.T","3401.T","3402.T",
+    # 펄프·종이
+    "3861.T","3863.T",
     # 화학
-    "4063.T","4188.T","4005.T","4183.T","4568.T","4523.T","4502.T","4519.T",
-    "4507.T","4578.T","4021.T","4042.T","4612.T",
-    # 철강·금속
-    "5401.T","5411.T","5406.T","5713.T","5802.T","5801.T","5108.T",
-    # 금융
-    "8306.T","8316.T","8411.T","8309.T","8308.T","8604.T","8601.T",
-    "8766.T","8725.T","8750.T","8630.T","8591.T","8697.T",
-    # 상사
-    "8058.T","8031.T","8001.T","8002.T","8053.T","8015.T",
-    # 통신·IT
-    "9432.T","9433.T","9434.T","9613.T","4689.T","4704.T",
-    # 유통·서비스
-    "3382.T","8267.T","9983.T","9843.T","4661.T","9735.T","9766.T",
+    "4004.T","4005.T","4021.T","4041.T","4042.T","4061.T","4063.T","4151.T",
+    "4182.T","4183.T","4188.T","4204.T","4208.T","4272.T","4324.T","4452.T","4612.T","4631.T",
+    # 의약품
+    "4502.T","4503.T","4507.T","4519.T","4523.T","4543.T","4568.T","4578.T","4911.T",
+    # 석유·석탄
+    "5019.T","5020.T",
+    # 고무
+    "5101.T","5108.T",
+    # 유리·도토
+    "5201.T","5332.T","5333.T",
+    # 철강
+    "5401.T","5406.T","5411.T","5631.T",
+    # 비철금속
+    "5706.T","5713.T","5801.T","5802.T",
+    # 금속제품
+    "5901.T",
+    # 기계
+    "6113.T","6201.T","6273.T","6301.T","6302.T","6326.T","6361.T","6367.T",
+    "6383.T","6448.T","6471.T","6472.T",
+    # 전기기기
+    "6473.T","6479.T","6501.T","6503.T","6506.T","6594.T","6645.T",
+    "6701.T","6702.T","6723.T","6724.T","6752.T","6758.T","6762.T",
+    "6770.T","6841.T","6857.T","6861.T","6869.T","6920.T","6954.T","6963.T","6971.T","6981.T",
+    # 수송기기
+    "6902.T","7011.T","7012.T","7013.T",
+    "7201.T","7203.T","7211.T","7261.T","7267.T","7269.T","7270.T","7272.T",
+    # 정밀기기
+    "4901.T","7731.T","7733.T","7735.T","7741.T","7751.T",
+    # 기타제조
+    "7832.T","7936.T","7951.T","7974.T",
+    # 전기·가스
+    "9501.T","9502.T","9503.T","9531.T","9532.T",
+    # 육운
+    "9005.T","9007.T","9008.T","9009.T","9020.T","9021.T","9022.T","9064.T","9143.T",
+    # 해운
+    "9101.T","9104.T","9107.T",
+    # 항공
+    "9201.T","9202.T",
+    # 창고·운송서비스
+    "9301.T",
+    # 정보·통신
+    "4661.T","4689.T","4704.T","9432.T","9433.T","9434.T","9613.T","9984.T",
+    # 도소매
+    "2432.T","3382.T","6098.T","6178.T",
+    "8001.T","8002.T","8015.T","8031.T","8053.T","8058.T","8252.T","8267.T",
+    "9843.T","9983.T",
+    # 금융·증권·보험
+    "8253.T","8306.T","8308.T","8309.T","8316.T","8411.T",
+    "8591.T","8601.T","8604.T","8630.T","8697.T","8725.T","8750.T","8766.T",
     # 부동산
     "8801.T","8802.T","8830.T",
-    # 운수
-    "9020.T","9021.T","9022.T","9101.T","9104.T","9107.T","9201.T","9202.T",
-    # 제약·의료
-    "4543.T","7741.T",
-    # 정밀기기
-    "7731.T","7733.T","7751.T","4901.T",
-    # 식품·음료
-    "2914.T","2502.T","2503.T","2801.T","2802.T",
-    # 기타
-    "9984.T","7974.T","7832.T","7951.T","5020.T","5019.T",
+    # 서비스
+    "9602.T","9735.T","9766.T",
 ]
 
 def _get_nikkei225_tickers():
     try:
         tables = _html_tables("https://en.wikipedia.org/wiki/Nikkei_225")
         for t in tables:
-            for col in t.columns:
-                vals = t[col].astype(str)
-                matches = vals[vals.str.match(r"^\d{4}$")]
-                if len(matches) > 100:
-                    return [v + ".T" for v in matches.tolist()]
+            cols_lower = [c.lower() for c in t.columns]
+            # 'Code' 컬럼 + 'Company'/'Sector' 컬럼이 함께 있는 테이블이 종목 목록
+            has_code = any(c == 'code' for c in cols_lower)
+            has_company = any(kw in c for c in cols_lower for kw in ('company', 'name', 'sector'))
+            if has_code and has_company:
+                code_col = t.columns[[c.lower() == 'code' for c in t.columns]][0]
+                codes = t[code_col].astype(str)
+                valid = codes[codes.str.match(r'^\d{4}$')].tolist()
+                if len(valid) > 100:
+                    print(f"[Nikkei225] Wikipedia 스크래핑 성공: {len(valid)}개")
+                    return [v + ".T" for v in valid]
     except Exception:
         pass
+    print(f"[Nikkei225] Wikipedia 스크래핑 실패 → fallback {len(_NIKKEI225_FALLBACK)}개 사용")
     return _NIKKEI225_FALLBACK
 
 def fetch_japan():
@@ -562,5 +656,35 @@ CSI300_TICKERS = [
     "000032.SZ",  # 심전투자
 ]
 
+def _get_csi300_tickers():
+    import re as _re
+    try:
+        tables = _html_tables("https://en.wikipedia.org/wiki/CSI_300_Index")
+        for t in tables:
+            if 'Ticker' in t.columns and 'Exchange' in t.columns:
+                result = []
+                for _, row in t.iterrows():
+                    # Ticker 형식: "SSE: 600519" 또는 "SZSE: 300750"
+                    m = _re.search(r'\d{6}', str(row['Ticker']))
+                    if not m:
+                        continue
+                    code = m.group()
+                    exch = str(row.get('Exchange', '')).lower()
+                    if 'shanghai' in exch:
+                        result.append(f"{code}.SS")
+                    elif 'shenzhen' in exch:
+                        result.append(f"{code}.SZ")
+                    elif code.startswith('6'):
+                        result.append(f"{code}.SS")
+                    else:
+                        result.append(f"{code}.SZ")
+                if len(result) > 200:
+                    print(f"[CSI300] Wikipedia 스크래핑 성공: {len(result)}개")
+                    return result
+    except Exception as e:
+        print(f"[CSI300] Wikipedia 스크래핑 실패: {e}")
+    print(f"[CSI300] fallback {len(CSI300_TICKERS)}개 사용")
+    return CSI300_TICKERS
+
 def fetch_china():
-    return _fetch_country(CSI300_TICKERS, "CNY", "china", info_delay=0.4)
+    return _fetch_country(_get_csi300_tickers(), "CNY", "china", info_delay=0.4)
