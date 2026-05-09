@@ -217,6 +217,47 @@ npm run dev
 
 ---
 
+## 데이터 수집 문제 발생 시 (yfinance Rate Limit)
+
+현재 백엔드는 **yfinance (Yahoo Finance 비공식 스크래퍼)** 를 사용합니다. 대량 요청 시 IP 차단이 발생할 수 있으며, 이 경우 이전 캐시로 자동 폴백됩니다.
+
+차단이 잦거나 전 종목 안정적 수집이 필요한 경우 **Financial Modeling Prep (FMP)** 유료 API로 전환을 권장합니다.
+
+### Financial Modeling Prep (FMP) 전환 가이드
+
+#### 1. API 키 발급
+
+[https://financialmodelingprep.com](https://financialmodelingprep.com) 에서 가입 후 Basic 플랜 구독 ($14/월)
+
+#### 2. yfinance 대비 장점
+
+| 항목 | yfinance (현재) | FMP Basic ($14/월) |
+|---|---|---|
+| 수집 시간 | 나라당 30~60분 | 나라당 5~10초 |
+| 차단 위험 | 높음 | 없음 |
+| 데이터 완성도 | 60~80% | 95%+ |
+| 5개국 동시 수집 | 불안정 | 안정적 |
+
+#### 3. FMP 핵심 엔드포인트
+
+```bash
+# 지수 전체 재무비율 (PER·PBR·ROE 등) 한 번에
+GET https://financialmodelingprep.com/api/v3/ratios-bulk?index=KOSPI&apikey={KEY}
+GET https://financialmodelingprep.com/api/v3/ratios-bulk?index=SP500&apikey={KEY}
+GET https://financialmodelingprep.com/api/v3/ratios-bulk?index=NASDAQ&apikey={KEY}
+GET https://financialmodelingprep.com/api/v3/ratios-bulk?index=HSI&apikey={KEY}     # 중국
+GET https://financialmodelingprep.com/api/v3/ratios-bulk?index=N225&apikey={KEY}    # 일본
+
+# 기술적 지표 (RSI·200일선 등)
+GET https://financialmodelingprep.com/api/v3/technical_indicator/1day/{TICKER}?type=rsi&period=14&apikey={KEY}
+```
+
+#### 4. 전환 시 수정 범위
+
+`backend/fetcher.py` 의 `fetch_*` 함수들만 교체하면 됩니다. `backend/api.py` 와 프론트엔드 코드는 변경 불필요.
+
+---
+
 ## 주의사항
 
 - 본 프로젝트는 **투자 정보 제공 목적**이며 투자 권유가 아닙니다.
